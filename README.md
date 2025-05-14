@@ -1,108 +1,95 @@
 # DRMixaholic License System
 
-This project provides a simple system for generating and verifying software licenses. It's designed for developers who want a straightforward way to issue a proof-of-work (POW) and a corresponding private key for software access. The POW incorporates a **user/company name and a project name**. The private key is salted with the OS username of the computer where it's generated, tying the license to that specific user context for that project.
+This project provides a system for generating and verifying software licenses. The **Proof of Work (POW)** itself is a Base64 encoded string containing `user_or_company_name/project_name#os_username_salt`, making the POW inherently tied to a user and project. The **Private Key** is a direct double hash of this POW.
 
 ## Why Use This?
 
-- **Simple Licensing**: Avoids complex licensing servers for basic use cases.
-- **User-Specific & Project-Specific Keys**: Licenses are tied to the username on the machine where the key was generated and the specific project name provided, adding layers of specificity.
-- **Proof of Legitimate Use**: The POW (e.g., `User Name/Project Name`) can be a publicly listed identifier that you manage.
-- **Offline Verification (Core Logic)**: The core cryptographic check (POW + OS username salt vs. Private Key) is self-contained.
-- **Online POW List Check**: Verification still includes checking the decoded POW (e.g., `User Name/Project Name`) against a list you maintain online.
-- **Multi-Language Support**: Includes a key generator in Go and verifier libraries in Go, Python, and Node.js.
+- **Simple, Specific Licensing**: Avoids complex servers. Licenses are tied to user, project, and the machine context (OS username) where the key was generated.
+- **Proof of Legitimate Use**: The decoded part of the POW (`user_or_company_name/project_name`) is checked against a list you manage.
+- **Multi-Language Support**: Go generator; Go, Python, Node.js verifiers.
 
 ## Core Components
 
-1.  **Key/POW Generator (`main.go`)**: A Go application that prompts for a user/company name, a project name, and then generates:
-    *   **Proof of Work Data**: A string formatted as `user_or_company_name/project_name`.
-    *   **Proof of Work (POW)**: The Base64 encoded string of the Proof of Work Data. This is shared with the software author.
-    *   **Private Key**: A SHA256 hash of a SHA512 hash of the `Base64_POW + os_username_salt`. The `os_username_salt` is the username of the OS user running the generator. This key is kept secret by the end-user.
+1.  **Key/POW Generator (`main.go`)**:
+    *   Prompts for: user/company name, project name.
+    *   Automatically gets the current OS username (`os_username_salt`).
+    *   Creates **Proof of Work Data**: `user_or_company_name/project_name#os_username_salt`.
+    *   Generates **Proof of Work (POW)**: Base64 encoding of the Proof of Work Data.
+    *   Generates **Private Key**: `sha256(sha512(POW))`.
 
-2.  **Verifier Libraries (`verifylib/`)**: Libraries in Go, Python, and Node.js that perform the verification process:
-    *   They take a Base64 POW and a Private Key (from `.env` or environment variables).
-    *   They take the URL of your publicly hosted POW list as an argument.
-    *   They automatically fetch the current OS username for salting.
+2.  **Verifier Libraries (`verifylib/`)**:
+    *   Take Base64 `POW` and `PRIVATE_KEY` (from `.env` or environment).
+    *   Take `POW_LIST_URL` (URL to your list of valid `user_or_company_name/project_name` strings) as an argument.
     *   **Verification Steps**:
-        1.  Fetch the current OS username (`currentUserSalt`).
-        2.  Reconstruct the salted data for key checking: `Base64_POW_from_env + currentUserSalt`.
-        3.  Recalculate a private key from this reconstructed salted data using `sha256(sha512(salted_data))`.
-        4.  Compare this recalculated private key with the `PRIVATE_KEY_from_env`. If they don't match, verification fails.
-        5.  Decode the `Base64_POW_from_env`. This should result in the original `user_or_company_name/project_name` string.
-        6.  Fetch the list of valid POW data strings (e.g., `User1/ProjectA`, `CompanyX/ProjectB`) from the provided URL.
-        7.  Check if the decoded POW data string exists in the fetched list. If not, verification fails.
-        8.  If all checks pass, verification is successful.
+        1.  **Key Check**: Calculate `expected_private_key = sha256(sha512(POW_from_env))`. Compare with `PRIVATE_KEY_from_env`. If mismatch, fail.
+        2.  **Decode POW**: Decode `POW_from_env` to get the `decoded_pow_string` (e.g., `User/Project#generating_username`).
+        3.  **Get Current Username**: Fetch the OS username of the machine running the verifier (`current_os_username`).
+        4.  **Parse Decoded POW**: Split `decoded_pow_string` at the last `#` to get `name_project_part` (e.g., `User/Project`) and `original_os_username_salt` (e.g., `generating_username`).
+        5.  **Username Match**: Compare `original_os_username_salt` with `current_os_username`. If mismatch, fail.
+        6.  **POW List Check**: Fetch your list of valid `user_or_company_name/project_name` strings from `POW_LIST_URL`. Check if `name_project_part` is in this list. If not found, fail.
+        7.  If all checks pass, verification is successful.
 
 ## How to Use
 
 ### 1. Setup - The POW List (Software Author)
 
-1.  **Create a Plaintext File**: This file will contain all valid **decoded** POW data strings (i.e., `user_or_company_name/project_name`), one per line.
+1.  **Create `pow_list.txt`**: Contains valid `user_or_company_name/project_name` strings, one per line. **Do not include the `#os_username_salt` part here.**
     *Example `pow_list.txt` content:*
     ```
     Alice Personal/My Cool App
     Bob Inc./Enterprise Suite
-    Charlie Company/Data Tool
     Sammy Lord/Project DRMixaholic
     ```
 2.  **Host This File Online**: Make it accessible via a public URL.
 
 ### 2. Generating POW and Private Key (End User / For End User)
 
-**Prerequisites**: Go installed.
-
-**Steps**:
-1.  Navigate to the root directory (`DRMixaholic`).
-2.  Run `go run main.go`.
-3.  The application will first note the OS username being used as a salt.
-4.  It will then prompt for:
-    *   Personal or company use.
-    *   User or company name.
-    *   **Project name**.
-5.  It will output:
-    *   **Data for POW (before base64)**: e.g., `Your Name/Your Project`.
-    *   **Username Salt Used**.
-    *   **Proof of Work (base64)**: The Base64 of `Your Name/Your Project`. Share this with the software author.
-    *   **Private Key (salted)**: Keep this secret. It's tied to the specific POW (including project name) and your OS username.
+1.  Run `go run main.go` in the project root.
+2.  It will note the OS username being used (e.g., `yourusername`).
+3.  Enter user/company name and project name when prompted.
+4.  **Output**:
+    *   **Data embedded in POW (before base64)**: e.g., `Your Name/Your Project#yourusername`.
+    *   **Proof of Work (base64)**: Base64 of the above. Share this with the software author.
+    *   **Private Key**: `sha256(sha512(POW))`. Keep this secret.
+    *   Instructions explain that the POW list contains the `name/project` part, and the key is tied to the full POW (which includes their username).
 
 ### 3. Verifying the License in Your Application (Software Developer)
 
 **General Setup for Verifiers**:
-*   End-user application needs `POW` (the Base64 string) and `PRIVATE_KEY` (the salted hex string) in its environment or `.env` file.
-*   You pass the `POW_LIST_URL` to the verifier function.
-*   The verifier uses the current OS username to attempt to match the salted private key.
-*   The verifier decodes the POW and expects to find the resulting `user_name/project_name` string in your `pow_list.txt`.
-
-**(Demo CLI usage instructions for Go, Python, Node.js remain largely the same, with the understanding that the POW in `.env` is now for `name/project` and the `pow_list.txt` must match this decoded format).**
+*   End-user needs a `.env` file (or environment variables) with:
+    *   `POW`: The full Base64 encoded string (`user_or_company_name/project_name#generating_os_username`).
+    *   `PRIVATE_KEY`: The hex string private key derived from that full POW.
+*   You pass your `POW_LIST_URL` to the verifier function.
 
 **A. Go Verifier (`verifylib/go/verifier.go`)**
-    *   `.env` file for end-user:
+    *   `.env` example for the end-user:
         ```
-        POW="BASE64_OF_THEIR_NAME_AND_PROJECT_NAME"
-        PRIVATE_KEY="THEIR_SALTED_PRIVATE_KEY_STRING"
+        POW="BASE64_ENCODING_OF(TheirName/TheirProject#their_os_username_at_generation)"
+        PRIVATE_KEY="SHA256_OF_SHA512_OF_THE_ABOVE_POW_STRING"
         ```
-    *   Run: `go run verifier.go https://your-url.com/pow_list.txt`
+    *   Run demo: `cd verifylib/go && go run verifier.go https://your-url.com/pow_list.txt`
 
 **B. Python Verifier (`verifylib/python/verifier.py`)**
-    *   `.env` file for end-user:
+    *   `.env` example for the end-user:
         ```
-        POW="BASE64_OF_THEIR_NAME_AND_PROJECT_NAME"
-        PRIVATE_KEY="THEIR_SALTED_PRIVATE_KEY_STRING"
+        POW="BASE64_ENCODING_OF(TheirName/TheirProject#their_os_username_at_generation)"
+        PRIVATE_KEY="SHA256_OF_SHA512_OF_THE_ABOVE_POW_STRING"
         ```
-    *   Run: `python3 verifier.py https://your-url.com/pow_list.txt`
+    *   Run demo: `cd verifylib/python && python3 verifier.py https://your-url.com/pow_list.txt` (after venv setup)
 
 **C. Node.js Verifier (`verifylib/nodejs/verifier.js`)**
-    *   `.env` file for end-user:
+    *   `.env` example for the end-user:
         ```
-        POW="BASE64_OF_THEIR_NAME_AND_PROJECT_NAME"
-        PRIVATE_KEY="THEIR_SALTED_PRIVATE_KEY_STRING"
+        POW="BASE64_ENCODING_OF(TheirName/TheirProject#their_os_username_at_generation)"
+        PRIVATE_KEY="SHA256_OF_SHA512_OF_THE_ABOVE_POW_STRING"
         ```
-    *   Run: `node verifier.js https://your-url.com/pow_list.txt`
+    *   Run demo: `cd verifylib/nodejs && npm install && node verifier.js https://your-url.com/pow_list.txt`
 
 ## Security Considerations
 
-*   **Specificity**: The license is now specific to a user (via OS username salt) AND a project name (embedded in the POW).
-*   **POW List Management**: Your `pow_list.txt` now needs to be managed with `user_name/project_name` entries.
-*   **Private Key Secrecy**: Still paramount. The key is now also tied to the OS username.
+*   **POW is User-Specific**: The POW itself is now tied to the generating OS username. Sharing the POW and Private Key pair means the recipient must also run the software under the *original generating OS username* for it to work.
+*   **POW List Management**: The `pow_list.txt` contains the `user_or_company_name/project_name` part, *not* the username salt. This list authorizes specific user/project combinations.
+*   **Private Key Secrecy**: Critical. It's a direct derivative of the user-and-project-specific POW.
 *   **Username Predictability**: OS usernames can sometimes be predictable (e.g., 'admin', 'user'). This salt primarily prevents accidental key sharing across different user accounts on the *same* machine or trivial sharing to other machines if the username differs. It's not a strong cryptographic defense against a determined attacker who knows the target username.
 *   **Environment Consistency**: The software must be run under the same OS username context as when the key was generated for verification to pass. This might affect how users run the software (e.g., via specific user accounts, services running as a particular user).
 *   **POW List URL**: While not a secret, ensure the URL to your POW list is stable and the file itself is not tampered with.

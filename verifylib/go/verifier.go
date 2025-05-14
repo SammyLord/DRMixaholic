@@ -15,51 +15,62 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const saltDelimiter = "#" // Must match the delimiter in main.go
+
 // verifyLicense checks the POW and private key, taking powListURL as an argument
 func verifyLicense(powListURL string) (bool, string) {
-	// Get current username to use as salt for verification
-	currentUser, err := user.Current()
+	err := godotenv.Load()
 	if err != nil {
-		return false, fmt.Sprintf("Failed to get current user for verification: %v", err)
-	}
-	usernameSalt := currentUser.Username
-
-	err = godotenv.Load() // Loads .env file from the current directory
-	if err != nil {
-		return false, "Error loading .env file. Make sure it exists in the same directory as the executable and contains POW and PRIVATE_KEY."
+		return false, "Error loading .env file. Ensure it contains POW and PRIVATE_KEY."
 	}
 
-	pow := os.Getenv("POW")
-	privateKeyEnv := os.Getenv("PRIVATE_KEY")
+	powFromEnv := os.Getenv("POW")      // This is Base64 encoded: name/project#originalUsernameSalt
+	privateKeyEnv := os.Getenv("PRIVATE_KEY") // This is sha256(sha512(powFromEnv))
 
-	if pow == "" || privateKeyEnv == "" {
+	if powFromEnv == "" || privateKeyEnv == "" {
 		return false, "POW or PRIVATE_KEY not found in .env file."
 	}
-
 	if powListURL == "" {
 		return false, "powListURL argument cannot be empty."
 	}
 
-	// 1. Reconstruct the salted POW using the current machine's username
-	saltedPOW := pow + usernameSalt
-
-	// 2. Verify the private key: sha256(sha512(reconstructed saltedPOW))
-	sha512sum := sha512.Sum512([]byte(saltedPOW))
+	// 1. Verify the private key against the POW from .env
+	sha512sum := sha512.Sum512([]byte(powFromEnv))
 	sha256sum := sha256.Sum256(sha512sum[:])
 	calculatedPrivateKey := fmt.Sprintf("%x", sha256sum)
 
 	if calculatedPrivateKey != privateKeyEnv {
-		return false, fmt.Sprintf("Private key mismatch. Verification failed using current username salt: %s. Ensure this software is run by the same OS user who generated the key.", usernameSalt)
+		return false, "Private key mismatch. The provided Private Key does not match the hash of the POW."
 	}
 
-	// 3. Decode the POW (original POW, not the salted one)
-	decodedPOWBytes, err := base64.StdEncoding.DecodeString(pow) // Use original pow for decoding
+	// 2. Decode the POW to get the string: name/project#originalUsernameSalt
+	decodedPOWBytes, err := base64.StdEncoding.DecodeString(powFromEnv)
 	if err != nil {
-		return false, "Failed to decode POW (base64)."
+		return false, fmt.Sprintf("Failed to decode POW (base64): %v", err)
 	}
-	decodedPOW := string(decodedPOWBytes)
+	decodedPowStringWithSalt := string(decodedPOWBytes)
 
-	// 4. Fetch the list of valid POWs
+	// 3. Get current OS username
+	currentUser, err := user.Current()
+	if err != nil {
+		return false, fmt.Sprintf("Failed to get current OS username for verification: %v", err)
+	}
+	currentUsernameSalt := currentUser.Username
+
+	// 4. Parse the decoded POW string to separate name/project and original salt
+	parts := strings.SplitN(decodedPowStringWithSalt, saltDelimiter, 2)
+	if len(parts) != 2 {
+		return false, fmt.Sprintf("Failed to parse decoded POW. Expected delimiter '%s' not found or format is incorrect. Decoded: %s", saltDelimiter, decodedPowStringWithSalt)
+	}
+	nameProjectPart := parts[0]
+	originalUsernameSalt := parts[1]
+
+	// 5. Compare original salt from POW with current username salt
+	if originalUsernameSalt != currentUsernameSalt {
+		return false, fmt.Sprintf("Username mismatch. POW was generated for user '%s', but current user is '%s'.", originalUsernameSalt, currentUsernameSalt)
+	}
+
+	// 6. Fetch the list of valid POWs (which are name/project strings)
 	resp, err := http.Get(powListURL)
 	if err != nil {
 		return false, fmt.Sprintf("Failed to fetch POW list from URL: %s. Error: %v", powListURL, err)
@@ -73,7 +84,7 @@ func verifyLicense(powListURL string) (bool, string) {
 	scanner := bufio.NewScanner(resp.Body)
 	foundInList := false
 	for scanner.Scan() {
-		if strings.TrimSpace(scanner.Text()) == decodedPOW {
+		if strings.TrimSpace(scanner.Text()) == nameProjectPart {
 			foundInList = true
 			break
 		}
@@ -84,20 +95,18 @@ func verifyLicense(powListURL string) (bool, string) {
 	}
 
 	if !foundInList {
-		return false, fmt.Sprintf("Your POW ('%s') was not found in the valid list at %s.", decodedPOW, powListURL)
+		return false, fmt.Sprintf("The name/project part ('%s') from your POW was not found in the valid list at %s.", nameProjectPart, powListURL)
 	}
 
-	return true, fmt.Sprintf("Verification successful (Username Salt: %s).", usernameSalt)
+	return true, fmt.Sprintf("Verification successful (User: '%s', Project Info: '%s').", currentUsernameSalt, nameProjectPart)
 }
 
 func main() {
-	// For local testing, this main function expects the POW_LIST_URL as a command-line argument.
-	// In a real application, the calling code would provide this URL directly to verifyLicense.
 	if _, err := os.Stat(".env"); os.IsNotExist(err) {
 		fmt.Println("Note: .env file not found. This program expects a .env file with POW and PRIVATE_KEY.")
 		fmt.Println("Example .env content:")
-		fmt.Println("POW=\"YOUR_BASE64_ENCODED_PROOF_OF_WORK\"")
-		fmt.Println("PRIVATE_KEY=\"YOUR_SALTED_PRIVATE_KEY\"")
+		fmt.Println("POW=\"BASE64_OF_NAME/PROJECT#USERNAME\"")
+		fmt.Println("PRIVATE_KEY=\"SHA256_OF_SHA512_OF_THE_POW_ABOVE\"")
 	}
 
 	if len(os.Args) < 2 {
